@@ -10,6 +10,7 @@ import Network
 import CommonCrypto
 import CryptoKit
 import System
+import AppKit
 
 import SwiftECC
 import BigInt
@@ -266,11 +267,21 @@ class NearbyConnection{
 				if chunk.hasBody {
 					buffer.append(chunk.body)
 				}
-				if (chunk.flags & 1)==1 {
-					payloadBuffers.removeValue(forKey: payloadID)
-					let innerFrame=try Sharing_Nearby_Frame(serializedData: buffer as Data)
-					try processTransferSetupFrame(innerFrame)
-				}
+                if (chunk.flags & 1)==1 {
+                    payloadBuffers.removeValue(forKey: payloadID)
+                    if let innerFrame=try? Sharing_Nearby_Frame(serializedData: buffer as Data) {
+                        try processTransferSetupFrame(innerFrame)
+                    } else if let text = String(data: buffer as Data, encoding: .utf8) {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(text, forType: .string)
+                        if Preferences.openLinksInBrowser, text.isValidURL, let url = URL(string: text) {
+                            NSWorkspace.shared.open(url)
+                        }
+                        try sendDisconnectionAndDisconnect()
+                    } else {
+                        print("Bad data: \(buffer as Data)")
+                    }
+                }
 			}else if case .file = header.type{
 				try processFileChunk(frame: payloadTransfer)
 			}
@@ -437,8 +448,13 @@ struct RemoteDeviceInfo{
 	}
 }
 
-struct TransferMetadata{
-	let files:[FileMetadata]
+enum TransferMetadata{
+    case text(Sharing_Nearby_TextMetadata)
+    case files([FileMetadata])
+}
+
+struct TextMetadata{
+    let title: String
 }
 
 struct FileMetadata{
@@ -455,4 +471,16 @@ struct InternalFileInfo{
 	var fileHandle:FileHandle?
 	var progress:Progress?
 	var created:Bool=false
+}
+
+extension String {
+    var isValidURL: Bool {
+        let detector = try! NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue)
+        if let match = detector.firstMatch(in: self, options: [], range: NSRange(location: 0, length: self.utf16.count)) {
+            // it is a link, if the match covers the whole string
+            return match.range.length == self.utf16.count
+        } else {
+            return false
+        }
+    }
 }
